@@ -1,0 +1,130 @@
+---
+title: "Practical Machine Learning Course Project"
+output: html_document
+---
+
+# Overview
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this report we will use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. The data is available from the HAR study website at http://groupware.les.inf.puc-rio.br/har
+
+A random forest fit model based on collected sensor data will be used to predict the manner in which the users did the exercise, based on a 5 level classification (from "A" to "E").
+  
+# Predictor selection and exploratory data analysis
+The available data from the HAR website includes a training set composed of 19622 observations and 160 columns. Several of these columns include NA values and there are some occurrences of #DIV/0! values that will also be treated as NA. A validation sample of 20 observations will be loaded and cleaned in order to be used as the final step of the study (see last section).
+```{r, echo=TRUE, cache=TRUE, warning=FALSE, message=FALSE}
+require(data.table)
+training <- fread("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", 
+                  data.table=TRUE, header=TRUE, sep=",", na.strings=c("NA", "#DIV/0!"))
+# training <- fread("./pml-training.csv", data.table=TRUE) # Local load
+validation <- fread("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", 
+                 data.table=TRUE, header=TRUE, sep=",", na.strings=c("NA", "#DIV/0!"))
+str(training)
+```
+
+Taking a closer look at the data set, 107 of the columns contain information related to timestamp, exercise window and calculated statistical variables based on sensor data (kurtosis, standard deviation, skewdness, etc.). This study will only focus on predictors related to pure sensor data. Thus, all the other columns will be discarded prior to partitioning data for training and testing the model.
+```{r, echo=TRUE, cache=TRUE, warning=FALSE, message=FALSE}
+isNotPredictor <- grepl("V1|user|timestamp|window|kurtosis|skewness|max|min|amplitude|avg|stddev|var", names(training))
+predictors <- names(training)[!isNotPredictor] 
+training2 <- training[, predictors, with=F]
+length(names(training2)) 
+```
+
+The "classe" column to predict is a categorical variable with values from "A" to "E" that will be formatted as a factor variable. Moreover, the rest of the predictors (numeric sensor data) will be homogenized to numeric class.
+```{r, echo=TRUE, cache=TRUE, warning=FALSE, message=FALSE}
+training2$classe <- as.factor(training2$classe)
+training2 <- training2[, (c(1:52)) := lapply(.SD, as.numeric), .SDcols = c(1:52)]
+str(training2)
+```
+
+A verification of variance near zero follows, in order to check if the chosen predictors are suitable for the model (they are not constants). The result indicates that no variable from sensor data has near zero variance.
+```{r, echo=TRUE, cache=TRUE, warning=FALSE, message=FALSE}
+require(caret)
+nzv <- nearZeroVar(training2, saveMetrics=F)
+length(nzv) 
+```
+
+Besides, even though some pairs of chosen predictors show a correlation higher than 70%, no pair is as highly correlated (>.999 correlation) as to be considered disposable.
+```{r, echo=TRUE, cache=TRUE, warning=FALSE, message=FALSE}
+filteredtrain <- training2[, c(1:52), with=FALSE]
+descrCor <-  cor(filteredtrain)
+highCorr <- sum(abs(descrCor[upper.tri(descrCor)]) > .999) 
+highCorr
+```
+
+Lastly, no linear dependences between the chosen predictors have arised, confirming the previous assumption on correlation.
+```{r, echo=TRUE, cache=TRUE, warning=FALSE, message=FALSE}
+findLinearCombos(filteredtrain)
+```
+
+The following pairs plot shows the relationship between four belt sensor data variables and exercise level (classe variable).
+```{r, echo=TRUE, cache=TRUE, warning=FALSE, message=FALSE}
+belt <- grepl("_belt|classe", names(training)); beltDS <- training[, names(training)[belt], with=F]
+require(GGally)
+ggpairs(data=beltDS, mapping = aes(color=classe), columns=c(1:4),
+        axisLabels="internal",upper="blank", diag="blank",
+        lower = list(continuous = wrap("points", alpha = 0.8)))
+```
+
+# Preprocessing data
+The training set used to train the model will consist in 75% of the clean data set elements. The rest will be used as a test set for verifying the model.
+```{r, echo=TRUE, cache=TRUE, warning=FALSE, message=FALSE}
+inTrain <- createDataPartition(y=training2$classe,
+                               p=0.75, list=FALSE)
+train <- training2[inTrain,]
+test <- training2[-inTrain,]
+dim(train) 
+dim(test)
+```
+
+# Model training
+A random forest training method has been used to fit the model, as it is nowadays considered as the most precise --though also more time consuming--  method. In order to minimize the execution time, the parallel random forest training function has been used. It provides exactly the same results as the standard RF function. The resulting confusion matrix shows the accuracy of the model.
+```{r, echo=TRUE, cache=TRUE, warning=FALSE, message=FALSE}
+library(doMC) 
+registerDoMC(cores=detectCores()-1) 
+modFit <- train(classe~ .,data=train,method="rf",prox=TRUE)
+modFit
+modFit$finalModel
+```
+
+Applying the model to the 25% data composing the test set gives the following results, with just 33 elements classified incorrectly from a total of 4904 observations.
+```{r, echo=TRUE, cache=TRUE, warning=FALSE, message=FALSE}
+pred <- predict(modFit,test); 
+table(pred,test$classe)
+```
+
+# Validation sample prediction
+As a final step, the second data set or validation sample consisting in 20 obserations will be used to further verify the model. This new data set will be cleaned and formatted in exactly the same way as the initial testing data, as specified in the "Predictor selection and exploratory data analysis" section.
+```{r, echo=TRUE, cache=TRUE, warning=FALSE, message=FALSE}
+predictors <- names(validation)[!isNotPredictor]
+validation2 <- validation[, predictors, with=F]
+length(names(validation2)) # 53
+validation2 <- validation2[, (c(1:52)) := lapply(.SD, as.numeric), .SDcols = c(1:52)]
+str(validation2)
+```
+
+Predicted values for the validation set:
+```{r, echo=TRUE, cache=TRUE, warning=FALSE, message=FALSE}
+predict(modFit,validation2); 
+```
+
+The following plot shows the accuracy of the prediction for the first four belt-related variables from the test set, similar to the plot of the exploratory data analysis section:
+```{r, echo=TRUE, cache=TRUE, warning=FALSE, message=FALSE}
+belt <- grepl("_belt|classe", names(test)); beltDS <- test[, names(test)[belt], with=F]
+beltDS$predictRight <- pred==test$classe
+ggpairs(data=beltDS, mapping = aes(color = predictRight), columns=c(1:4),
+        axisLabels="internal",upper="blank", diag="blank",
+        lower = list(continuous = wrap("points", alpha = 0.8)))
+```
+
+# Conclusions
+Further refinements on the model could be performed taking into account the most important predictors from the importance ranking. The following feature plot shows predictors over 50% of accuracy of classification.
+```{r, echo=TRUE, cache=TRUE, warning=FALSE, message=FALSE}
+varImp(modFit)
+list50pc <- c("roll_belt", "yaw_belt", "magnet_dumbbell_z", "magnet_dumbbell_y", 
+            "pitch_forearm", "pitch_belt", "roll_forearm", "magnet_dumbbell_x")
+ds50pc <- test[, names(test) %in% list50pc, with=F]; ds50pc$classe <- test$classe
+require(AppliedPredictiveModeling); transparentTheme(trans = .1)
+featurePlot(x = ds50pc[, c(1:8), with=F], y = ds50pc$classe,
+            plot = "pairs", auto.key = list(columns = 5))
+```
+
+
